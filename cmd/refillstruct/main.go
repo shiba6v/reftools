@@ -42,13 +42,12 @@ func main() {
 		filename = flag.String("file", "", "filename")
 		modified = flag.Bool("modified", false, "read an archive of modified files from stdin")
 		offset   = flag.Int("offset", 0, "byte offset of the struct literal, optional if -line is present")
-		line     = flag.Int("line", 0, "line number of the struct literal, optional if -offset is present")
 		btags    buildutil.TagsFlag
 	)
 	flag.Var(&btags, "tags", buildutil.TagsFlagDoc)
 	flag.Parse()
 
-	if (*offset == 0 && *line == 0) || *filename == "" {
+	if *offset == 0 || *filename == "" {
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -92,17 +91,6 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-
-	// if *line > 0 {
-	// 	err = byLine(pkgs, path, *line)
-	// 	switch err {
-	// 	case nil:
-	// 		return
-	// 	default:
-	// 		log.Fatal(err)
-	// 	}
-	// }
-
 	log.Fatal(errNotFound)
 }
 
@@ -117,12 +105,10 @@ func absPath(filename string) (string, error) {
 type Field struct {
 	Name string
 	Pos  token.Pos
-	// Obj  types.Object
-	Var *types.Var
+	Var  *types.Var
 }
 
 func byOffset(lprog []*packages.Package, path string, offset int) error {
-	// debugPrintf("\n\n\n%d\n", offset)
 	f, pkg, pos, err := findPos(lprog, path, offset)
 	if err != nil {
 		return err
@@ -133,23 +119,13 @@ func byOffset(lprog []*packages.Package, path string, offset int) error {
 		return err
 	}
 
-	// https://qiita.com/tenntenn/items/beea3bd019ba92b4d62a
-	// info.Uses, info.Defsが役に立ちそう
-	for _, lp := range lprog {
-		for _, m := range lp.TypesInfo.Defs {
-			// debugPrintf("%#v\n", m)
-			_ = m
-		}
-	}
-
 	fields := make([]Field, 0)
 	sc := pkg.Types.Scope().Innermost(pos)
 	// 内側から外側に向かって、scopeを見る。
-	// universe scopeはskipする。
 	for sc.Parent() != nil {
 		for _, name := range sc.Names() {
 			obj := sc.Lookup(name)
-			// posより後ならスキップ
+			// pos以降ならスキップ
 			if obj.Pos() > pos {
 				continue
 			}
@@ -171,20 +147,19 @@ func byOffset(lprog []*packages.Package, path string, offset int) error {
 			if st == nil {
 				continue
 			}
+			// 自分自身には代入しない
+			if obj.Type().Underlying() == litInfo.typ.Underlying() {
+				continue
+			}
 			for i := 0; i < st.NumFields(); i++ {
 				fields = append(fields,
 					Field{
 						Name: name,
 						Pos:  obj.Pos(),
-						// Obj:  obj,
-						Var: st.Field(i),
+						Var:  st.Field(i),
 					},
 				)
 			}
-			// debugPrintf("%#v\n", obj.Pos())
-			// debugPrintf("%#v\n", name)
-			// debugPrintf("%#v\n", st)
-			// debugPrintf("\n")
 		}
 		sc = sc.Parent()
 	}
@@ -255,74 +230,6 @@ func findCompositeLit(f *ast.File, info *types.Info, pos token.Pos) (*ast.Compos
 	}
 	return nil, linfo, errNotFound
 }
-
-// func byLine(lprog []*packages.Package, path string, line int) (err error) {
-// 	debugPrintf("byLine\n")
-// 	var f *ast.File
-// 	var pkg *packages.Package
-// 	for _, p := range lprog {
-// 		for _, af := range p.Syntax {
-// 			if file := p.Fset.File(af.Pos()); file.Name() == path {
-// 				f = af
-// 				pkg = p
-// 			}
-// 		}
-// 	}
-// 	if f == nil || pkg == nil {
-// 		return fmt.Errorf("could not find file %q", path)
-// 	}
-// 	importNames := buildImportNameMap(f)
-
-// 	var outs []output
-// 	var prev types.Type
-// 	ast.Inspect(f, func(n ast.Node) bool {
-// 		lit, ok := n.(*ast.CompositeLit)
-// 		if !ok {
-// 			return true
-// 		}
-// 		startLine := pkg.Fset.Position(lit.Pos()).Line
-// 		endLine := pkg.Fset.Position(lit.End()).Line
-
-// 		if !(startLine <= line && line <= endLine) {
-// 			return true
-// 		}
-
-// 		var info litInfo
-// 		info.name, _ = pkg.TypesInfo.Types[lit].Type.(*types.Named)
-// 		info.typ, ok = pkg.TypesInfo.Types[lit].Type.Underlying().(*types.Struct)
-// 		if !ok {
-// 			prev = pkg.TypesInfo.Types[lit].Type.Underlying()
-// 			err = errNotFound
-// 			return true
-// 		}
-// 		info.hideType = hideType(prev)
-
-// 		startOff := pkg.Fset.Position(lit.Pos()).Offset
-// 		endOff := pkg.Fset.Position(lit.End()).Offset
-// 		newlit, lines := zeroValue(pkg.Types, importNames, lit, info)
-
-// 		var out output
-// 		out, err = prepareOutput(newlit, lines, startOff, endOff)
-// 		if err != nil {
-// 			return false
-// 		}
-// 		outs = append(outs, out)
-// 		return false
-// 	})
-// 	if err != nil {
-// 		return err
-// 	}
-// 	if len(outs) == 0 {
-// 		return errNotFound
-// 	}
-
-// 	for i := len(outs)/2 - 1; i >= 0; i-- {
-// 		opp := len(outs) - 1 - i
-// 		outs[i], outs[opp] = outs[opp], outs[i]
-// 	}
-
-// 	return json.NewEncoder(os.Stdout).Encode(outs)
-// }
 
 func hideType(t types.Type) bool {
 	switch t.(type) {

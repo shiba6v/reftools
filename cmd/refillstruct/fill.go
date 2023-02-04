@@ -68,10 +68,6 @@ func refillValue(pkg *packages.Package, importNames map[string]string, lit *ast.
 	}
 	for _, e := range lit.Elts {
 		kv := e.(*ast.KeyValueExpr)
-		// &ast.SelectorExpr{X:(*ast.Ident)(0xc00757a080), Sel:(*ast.Ident)(0xc00757a0a0)}
-		// &ast.Ident{NamePos:3531695, Name:"p", Obj:(*ast.Object)(0xc0077f57c0)}
-		// &ast.Ident{NamePos:3531697, Name:"ProductID", Obj:(*ast.Object)(nil)}
-		// debugPrintf("%#v\n", kv.Value.(*ast.SelectorExpr).Sel)
 		f.existing[kv.Key.(*ast.Ident).Name] = kv
 	}
 	return f.zero(info, make([]types.Type, 0, 8)), f.lines
