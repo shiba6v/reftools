@@ -9,9 +9,34 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"log"
+	"os"
 	"strconv"
 	"strings"
+
+	"golang.org/x/tools/go/packages"
 )
+
+func debugPrintf(format string, a ...interface{}) {
+	f, err := os.OpenFile("/tmp/log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err := f.Write([]byte(fmt.Sprintf(format, a...))); err != nil {
+		log.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func debugAstPrint(x interface{}) {
+	f, err := os.OpenFile("/tmp/log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ast.Fprint(f, token.NewFileSet(), x, ast.NotNilFilter)
+}
 
 // litInfo contains the information about
 // a literal to fill with zero values.
@@ -23,24 +48,30 @@ type litInfo struct {
 }
 
 type filler struct {
-	pkg         *types.Package
+	pkg         *packages.Package
 	pos         token.Pos
 	lines       int
 	existing    map[string]*ast.KeyValueExpr
+	otherElts   map[string]*ast.KeyValueExpr
 	first       bool
 	importNames map[string]string // import path -> import name
 }
 
-func zeroValue(pkg *types.Package, importNames map[string]string, lit *ast.CompositeLit, info litInfo) (ast.Expr, int) {
+func refillValue(pkg *packages.Package, importNames map[string]string, lit *ast.CompositeLit, info litInfo, otherElts map[string]*ast.KeyValueExpr) (ast.Expr, int) {
 	f := filler{
 		pkg:         pkg,
 		pos:         1,
 		first:       true,
 		existing:    make(map[string]*ast.KeyValueExpr),
+		otherElts:   otherElts,
 		importNames: importNames,
 	}
 	for _, e := range lit.Elts {
 		kv := e.(*ast.KeyValueExpr)
+		// &ast.SelectorExpr{X:(*ast.Ident)(0xc00757a080), Sel:(*ast.Ident)(0xc00757a0a0)}
+		// &ast.Ident{NamePos:3531695, Name:"p", Obj:(*ast.Object)(0xc0077f57c0)}
+		// &ast.Ident{NamePos:3531697, Name:"ProductID", Obj:(*ast.Object)(nil)}
+		// debugPrintf("%#v\n", kv.Value.(*ast.SelectorExpr).Sel)
 		f.existing[kv.Key.(*ast.Ident).Name] = kv
 	}
 	return f.zero(info, make([]types.Type, 0, 8)), f.lines
@@ -71,7 +102,7 @@ func (f *filler) zero(info litInfo, visited []types.Type) ast.Expr {
 			return nil
 		}
 	case *types.Chan:
-		valTypeName, ok := typeString(f.pkg, f.importNames, t.Elem())
+		valTypeName, ok := typeString(f.pkg.Types, f.importNames, t.Elem())
 		if !ok {
 			return nil
 		}
@@ -103,11 +134,11 @@ func (f *filler) zero(info litInfo, visited []types.Type) ast.Expr {
 	case *types.Interface:
 		return &ast.Ident{Name: "nil", NamePos: f.pos}
 	case *types.Map:
-		keyTypeName, ok := typeString(f.pkg, f.importNames, t.Key())
+		keyTypeName, ok := typeString(f.pkg.Types, f.importNames, t.Key())
 		if !ok {
 			return nil
 		}
-		valTypeName, ok := typeString(f.pkg, f.importNames, t.Elem())
+		valTypeName, ok := typeString(f.pkg.Types, f.importNames, t.Elem())
 		if !ok {
 			return nil
 		}
@@ -134,7 +165,7 @@ func (f *filler) zero(info litInfo, visited []types.Type) ast.Expr {
 	case *types.Signature:
 		params := make([]*ast.Field, t.Params().Len())
 		for i := 0; i < t.Params().Len(); i++ {
-			typeName, ok := typeString(f.pkg, f.importNames, t.Params().At(i).Type())
+			typeName, ok := typeString(f.pkg.Types, f.importNames, t.Params().At(i).Type())
 			if !ok {
 				return nil
 			}
@@ -144,7 +175,7 @@ func (f *filler) zero(info litInfo, visited []types.Type) ast.Expr {
 		}
 		results := make([]*ast.Field, t.Results().Len())
 		for i := 0; i < t.Results().Len(); i++ {
-			typeName, ok := typeString(f.pkg, f.importNames, t.Results().At(i).Type())
+			typeName, ok := typeString(f.pkg.Types, f.importNames, t.Results().At(i).Type())
 			if !ok {
 				return nil
 			}
@@ -188,7 +219,7 @@ func (f *filler) zero(info litInfo, visited []types.Type) ast.Expr {
 	case *types.Struct:
 		newlit := &ast.CompositeLit{Lbrace: f.pos}
 		if !info.hideType && info.name != nil {
-			typeName, ok := typeString(f.pkg, f.importNames, info.name)
+			typeName, ok := typeString(f.pkg.Types, f.importNames, info.name)
 			if !ok {
 				return nil
 			}
@@ -197,7 +228,7 @@ func (f *filler) zero(info litInfo, visited []types.Type) ast.Expr {
 				newlit.Type.(*ast.Ident).Name = "&" + newlit.Type.(*ast.Ident).Name
 			}
 		} else if !info.hideType && info.name == nil {
-			typeName, ok := typeString(f.pkg, f.importNames, t)
+			typeName, ok := typeString(f.pkg.Types, f.importNames, t)
 			if !ok {
 				return nil
 			}
@@ -214,22 +245,31 @@ func (f *filler) zero(info litInfo, visited []types.Type) ast.Expr {
 		first := f.first
 		f.first = false
 		lines := 0
-		imported := isImported(f.pkg, info.name)
+		imported := isImported(f.pkg.Types, info.name)
 
 		for i := 0; i < t.NumFields(); i++ {
 			field := t.Field(i)
+			// debugPrintf("%#v\n", field.Name())
 			// don't fill the field if it a gRPC system field
 			if strings.HasPrefix(field.Name(), "XXX_") {
 				continue
 			}
+			k := &ast.Ident{Name: field.Name(), NamePos: f.pos}
 			if kv, ok := f.existing[field.Name()]; first && ok {
 				f.pos++
 				lines++
 				f.fixExprPos(kv)
 				newlit.Elts = append(newlit.Elts, kv)
+			} else if kv, ok := f.otherElts[strings.ToLower(field.Name())]; first && ok {
+				// refill value from other elements.
+				f.pos++
+				lines++
+				// use the same key.
+				kv.Key = k
+				kv.Colon = f.pos
+				newlit.Elts = append(newlit.Elts, kv)
 			} else if !ok && !imported || field.Exported() {
 				f.pos++
-				k := &ast.Ident{Name: field.Name(), NamePos: f.pos}
 				if v := f.zero(litInfo{typ: field.Type(), name: nil}, visited); v != nil {
 					lines++
 					newlit.Elts = append(newlit.Elts, &ast.KeyValueExpr{
@@ -262,7 +302,7 @@ type sequence interface {
 func (f *filler) fillSequence(info litInfo, visited []types.Type, t sequence, length ast.Expr) ast.Expr {
 	lit := &ast.CompositeLit{Lbrace: f.pos}
 	if !info.hideType {
-		typeName, ok := typeString(f.pkg, f.importNames, t.Elem())
+		typeName, ok := typeString(f.pkg.Types, f.importNames, t.Elem())
 		if !ok {
 			return nil
 		}

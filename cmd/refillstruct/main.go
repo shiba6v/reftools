@@ -23,6 +23,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/ast/astutil"
@@ -32,6 +33,7 @@ import (
 
 var errNotFound = errors.New("no struct literal found at selection")
 
+// go run cmd/refillstruct/* -file ../gorefill/example/main.go -offset 493
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("fillstruct: ")
@@ -91,15 +93,15 @@ func main() {
 		}
 	}
 
-	if *line > 0 {
-		err = byLine(pkgs, path, *line)
-		switch err {
-		case nil:
-			return
-		default:
-			log.Fatal(err)
-		}
-	}
+	// if *line > 0 {
+	// 	err = byLine(pkgs, path, *line)
+	// 	switch err {
+	// 	case nil:
+	// 		return
+	// 	default:
+	// 		log.Fatal(err)
+	// 	}
+	// }
 
 	log.Fatal(errNotFound)
 }
@@ -112,7 +114,15 @@ func absPath(filename string) (string, error) {
 	return filepath.Abs(eval)
 }
 
+type Field struct {
+	Name string
+	Pos  token.Pos
+	// Obj  types.Object
+	Var *types.Var
+}
+
 func byOffset(lprog []*packages.Package, path string, offset int) error {
+	// debugPrintf("\n\n\n%d\n", offset)
 	f, pkg, pos, err := findPos(lprog, path, offset)
 	if err != nil {
 		return err
@@ -123,11 +133,86 @@ func byOffset(lprog []*packages.Package, path string, offset int) error {
 		return err
 	}
 
+	// https://qiita.com/tenntenn/items/beea3bd019ba92b4d62a
+	// info.Uses, info.Defsが役に立ちそう
+	for _, lp := range lprog {
+		for _, m := range lp.TypesInfo.Defs {
+			// debugPrintf("%#v\n", m)
+			_ = m
+		}
+	}
+
+	fields := make([]Field, 0)
+	sc := pkg.Types.Scope().Innermost(pos)
+	// 内側から外側に向かって、scopeを見る。
+	// universe scopeはskipする。
+	for sc.Parent() != nil {
+		for _, name := range sc.Names() {
+			obj := sc.Lookup(name)
+			// posより後ならスキップ
+			if obj.Pos() > pos {
+				continue
+			}
+			// 変数のみ。型定義は除く。
+			if _, ok := obj.(*types.Var); !ok {
+				continue
+			}
+			var st *types.Struct
+			switch t := obj.Type().(type) {
+			case *types.Named:
+				if s, ok := t.Underlying().(*types.Struct); ok {
+					st = s
+				}
+			case *types.Struct:
+				st = t
+			default:
+				continue
+			}
+			if st == nil {
+				continue
+			}
+			for i := 0; i < st.NumFields(); i++ {
+				fields = append(fields,
+					Field{
+						Name: name,
+						Pos:  obj.Pos(),
+						// Obj:  obj,
+						Var: st.Field(i),
+					},
+				)
+			}
+			// debugPrintf("%#v\n", obj.Pos())
+			// debugPrintf("%#v\n", name)
+			// debugPrintf("%#v\n", st)
+			// debugPrintf("\n")
+		}
+		sc = sc.Parent()
+	}
+
+	// use other structs elements. lowercase
+	otherElts := make(map[string]*ast.KeyValueExpr)
+	// otherElts[strings.ToLower("Name")] = &ast.KeyValueExpr{
+	// 	Key:   nil,
+	// 	Colon: 0,
+	// 	Value: &ast.SelectorExpr{X: &ast.Ident{Name: "p"}, Sel: &ast.Ident{Name: "Name"}},
+	// }
+	// 前から順番にコピーし、すでに存在するならスキップ。
+	sort.Slice(fields, func(i, j int) bool { return fields[i].Pos < fields[j].Pos })
+	for _, f := range fields {
+		if _, ok := otherElts[strings.ToLower(f.Var.Name())]; ok {
+			continue
+		}
+		otherElts[strings.ToLower(f.Var.Name())] = &ast.KeyValueExpr{
+			Key:   nil,
+			Colon: 0,
+			Value: &ast.SelectorExpr{X: &ast.Ident{Name: f.Name}, Sel: &ast.Ident{Name: f.Var.Name()}},
+		}
+	}
+
 	start := lprog[0].Fset.Position(lit.Pos()).Offset
 	end := lprog[0].Fset.Position(lit.End()).Offset
-
 	importNames := buildImportNameMap(f)
-	newlit, lines := zeroValue(pkg.Types, importNames, lit, litInfo)
+	newlit, lines := refillValue(pkg, importNames, lit, litInfo, otherElts)
 	out, err := prepareOutput(newlit, lines, start, end)
 	if err != nil {
 		return err
@@ -171,72 +256,73 @@ func findCompositeLit(f *ast.File, info *types.Info, pos token.Pos) (*ast.Compos
 	return nil, linfo, errNotFound
 }
 
-func byLine(lprog []*packages.Package, path string, line int) (err error) {
-	var f *ast.File
-	var pkg *packages.Package
-	for _, p := range lprog {
-		for _, af := range p.Syntax {
-			if file := p.Fset.File(af.Pos()); file.Name() == path {
-				f = af
-				pkg = p
-			}
-		}
-	}
-	if f == nil || pkg == nil {
-		return fmt.Errorf("could not find file %q", path)
-	}
-	importNames := buildImportNameMap(f)
+// func byLine(lprog []*packages.Package, path string, line int) (err error) {
+// 	debugPrintf("byLine\n")
+// 	var f *ast.File
+// 	var pkg *packages.Package
+// 	for _, p := range lprog {
+// 		for _, af := range p.Syntax {
+// 			if file := p.Fset.File(af.Pos()); file.Name() == path {
+// 				f = af
+// 				pkg = p
+// 			}
+// 		}
+// 	}
+// 	if f == nil || pkg == nil {
+// 		return fmt.Errorf("could not find file %q", path)
+// 	}
+// 	importNames := buildImportNameMap(f)
 
-	var outs []output
-	var prev types.Type
-	ast.Inspect(f, func(n ast.Node) bool {
-		lit, ok := n.(*ast.CompositeLit)
-		if !ok {
-			return true
-		}
-		startLine := pkg.Fset.Position(lit.Pos()).Line
-		endLine := pkg.Fset.Position(lit.End()).Line
+// 	var outs []output
+// 	var prev types.Type
+// 	ast.Inspect(f, func(n ast.Node) bool {
+// 		lit, ok := n.(*ast.CompositeLit)
+// 		if !ok {
+// 			return true
+// 		}
+// 		startLine := pkg.Fset.Position(lit.Pos()).Line
+// 		endLine := pkg.Fset.Position(lit.End()).Line
 
-		if !(startLine <= line && line <= endLine) {
-			return true
-		}
+// 		if !(startLine <= line && line <= endLine) {
+// 			return true
+// 		}
 
-		var info litInfo
-		info.name, _ = pkg.TypesInfo.Types[lit].Type.(*types.Named)
-		info.typ, ok = pkg.TypesInfo.Types[lit].Type.Underlying().(*types.Struct)
-		if !ok {
-			prev = pkg.TypesInfo.Types[lit].Type.Underlying()
-			err = errNotFound
-			return true
-		}
-		info.hideType = hideType(prev)
+// 		var info litInfo
+// 		info.name, _ = pkg.TypesInfo.Types[lit].Type.(*types.Named)
+// 		info.typ, ok = pkg.TypesInfo.Types[lit].Type.Underlying().(*types.Struct)
+// 		if !ok {
+// 			prev = pkg.TypesInfo.Types[lit].Type.Underlying()
+// 			err = errNotFound
+// 			return true
+// 		}
+// 		info.hideType = hideType(prev)
 
-		startOff := pkg.Fset.Position(lit.Pos()).Offset
-		endOff := pkg.Fset.Position(lit.End()).Offset
-		newlit, lines := zeroValue(pkg.Types, importNames, lit, info)
+// 		startOff := pkg.Fset.Position(lit.Pos()).Offset
+// 		endOff := pkg.Fset.Position(lit.End()).Offset
+// 		newlit, lines := zeroValue(pkg.Types, importNames, lit, info)
 
-		var out output
-		out, err = prepareOutput(newlit, lines, startOff, endOff)
-		if err != nil {
-			return false
-		}
-		outs = append(outs, out)
-		return false
-	})
-	if err != nil {
-		return err
-	}
-	if len(outs) == 0 {
-		return errNotFound
-	}
+// 		var out output
+// 		out, err = prepareOutput(newlit, lines, startOff, endOff)
+// 		if err != nil {
+// 			return false
+// 		}
+// 		outs = append(outs, out)
+// 		return false
+// 	})
+// 	if err != nil {
+// 		return err
+// 	}
+// 	if len(outs) == 0 {
+// 		return errNotFound
+// 	}
 
-	for i := len(outs)/2 - 1; i >= 0; i-- {
-		opp := len(outs) - 1 - i
-		outs[i], outs[opp] = outs[opp], outs[i]
-	}
+// 	for i := len(outs)/2 - 1; i >= 0; i-- {
+// 		opp := len(outs) - 1 - i
+// 		outs[i], outs[opp] = outs[opp], outs[i]
+// 	}
 
-	return json.NewEncoder(os.Stdout).Encode(outs)
-}
+// 	return json.NewEncoder(os.Stdout).Encode(outs)
+// }
 
 func hideType(t types.Type) bool {
 	switch t.(type) {
