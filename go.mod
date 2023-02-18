@@ -1,4 +1,4 @@
-module github.com/davidrjenni/reftools
+module github.com/shiba6v/reftools
 
 require (
 	github.com/kisielk/gotool v1.0.0
