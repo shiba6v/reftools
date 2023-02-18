@@ -256,7 +256,6 @@ func (f *filler) zero(info litInfo, visited []types.Type) ast.Expr {
 			if strings.HasPrefix(field.Name(), "XXX_") {
 				continue
 			}
-			k := &ast.Ident{Name: field.Name(), NamePos: f.pos}
 			if kv, ok := f.existing[field.Name()]; first && ok {
 				f.pos++
 				lines++
@@ -267,11 +266,13 @@ func (f *filler) zero(info litInfo, visited []types.Type) ast.Expr {
 				f.pos++
 				lines++
 				// use the same key.
+				k := &ast.Ident{Name: field.Name(), NamePos: f.pos}
 				kv.Key = k
 				kv.Colon = f.pos
 				newlit.Elts = append(newlit.Elts, kv)
 			} else if !ok && !imported || field.Exported() {
 				f.pos++
+				k := &ast.Ident{Name: field.Name(), NamePos: f.pos}
 				if v := f.zero(litInfo{typ: field.Type(), name: nil}, visited); v != nil {
 					lines++
 					newlit.Elts = append(newlit.Elts, &ast.KeyValueExpr{
