@@ -1,0 +1,37 @@
+package main
+
+import (
+	"fmt"
+
+	"github.com/shiba6v/reftools/cmd/errauto/example/input/1/somepkg"
+)
+
+type param2 struct {
+	P int
+}
+
+type input1 struct {
+	Param1 string
+	Param2 param2
+}
+
+type result1 struct {
+	Param1 int
+	Param2 param2
+}
+
+func func1() (input1, somepkg.PkgInput2, int, error) {
+	return input1{}, somepkg.PkgInput2{}, 0, nil
+}
+
+func run() (result1, somepkg.PkgOutput2, string, error) {
+	i1, i2, t, err := func1()
+	if err != nil {
+		return result1{}, somepkg.PkgOutput2{}, "", fmt.Errorf("run: func1 failed, %w", err)
+	}
+	return result1{}, somepkg.PkgOutput2{}, "", nil
+}
+
+func main() {
+	_, _, _, _ = run()
+}
