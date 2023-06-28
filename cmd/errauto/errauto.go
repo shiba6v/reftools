@@ -131,6 +131,10 @@ func ErrAuto(in Input) (Result, error) {
 			returnExprs = append(returnExprs, &ast.Ident{
 				Name: "nil",
 			})
+		case *types.Pointer:
+			returnExprs = append(returnExprs, &ast.Ident{
+				Name: "nil",
+			})
 		}
 	}
 	errMsgTmplParams := struct {

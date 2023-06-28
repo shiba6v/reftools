@@ -20,16 +20,16 @@ func func1() (input1, somepkg.PkgInput2, int, error) {
 	return input1{}, somepkg.PkgInput2{}, 0, nil
 }
 
-func run() (result1, somepkg.PkgOutput2, somepkg.PkgOutput3, string, error) {
+func run() (result1, somepkg.PkgOutput2, *somepkg.PkgOutput2, somepkg.PkgOutput3, string, error) {
 	i1, i2, t, err := func1()
-	
+
 	_ = i1
 	_ = i2
 	_ = t
 	_ = err
-	return result1{}, somepkg.PkgOutput2{}, 0, "", nil
+	return result1{}, somepkg.PkgOutput2{}, nil, 0, "", nil
 }
 
 func main() {
-	_, _, _, _, _ = run()
+	_, _, _, _, _, _ = run()
 }
